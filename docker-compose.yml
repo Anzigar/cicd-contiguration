@@ -1,0 +1,48 @@
+services:
+  ci-cd:
+    build: .
+    container_name: cicd-container
+    restart: always
+    volumes:
+      - ./db:/app/db
+    env_file:
+      - .env
+    networks:
+      - proxy
+    ports:
+      - "8000:8000"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.ci-cd.rule=Host(`ci-cd.safaripro.net`)"
+      - "traefik.http.routers.ci-cd.entrypoints=websecure"
+      - "traefik.http.routers.ci-cd.tls=true"
+      - "traefik.http.routers.ci-cd.tls.certresolver=letsencrypt"
+      - "traefik.http.services.ci-cd.loadbalancer.server.port=8000"
+      
+  traefik:
+    image: traefik:2.8
+    container_name: traefik
+    restart: unless-stopped
+    networks:
+      - proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro"
+      - "./traefik.yml:/traefik.yml:ro"
+      - "./acme.json:/acme.json"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.port=80"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.traefik.service=traefik"
+      - "traefik.http.routers.traefik.service=api@internal"
+      
+volumes:
+  db_data:
+    
+networks:
+  proxy:
+    external: true
