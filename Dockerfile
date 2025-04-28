@@ -25,6 +25,11 @@ RUN pip install --no-cache /wheels/*
 # Copy application code
 COPY --chown=appuser:appuser . .
 
+# Make entrypoint executable
+USER root
+RUN chmod +x /app/entrypoint.sh
+USER appuser
+
 # Environment variables
 ENV PORT=8000
 ENV HOST=0.0.0.0
@@ -33,5 +38,5 @@ ENV PYTHONUNBUFFERED=1
 # Expose port
 EXPOSE 8000
 
-# Start the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
