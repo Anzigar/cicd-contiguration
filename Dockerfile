@@ -30,9 +30,10 @@ USER root
 RUN chmod +x /app/entrypoint.sh
 USER appuser
 
-# Environment variables
+# Set fixed environment variables directly in Dockerfile
+# (no .env file dependency)
 ENV PORT=8000
-ENV HOST=0.0.0.0
+ENV HOST="0.0.0.0"
 ENV PYTHONUNBUFFERED=1
 
 # Expose port
