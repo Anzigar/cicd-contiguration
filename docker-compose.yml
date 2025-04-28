@@ -17,6 +17,12 @@ services:
       - "traefik.http.routers.ci-cd.tls=true"
       - "traefik.http.routers.ci-cd.tls.certresolver=letsencrypt"
       - "traefik.http.services.ci-cd.loadbalancer.server.port=8000"
+    environment:
+      - PORT=8000
+      - HOST=0.0.0.0
+      - ENVIRONMENT=production
+    depends_on:
+      - traefik
       
   traefik:
     image: traefik:2.8
@@ -27,16 +33,20 @@ services:
     ports:
       - "80:80"
       - "443:443"
+      - "8080:8080"  
     volumes:
       - "/var/run/docker.sock:/var/run/docker.sock:ro"
       - "./traefik.yml:/traefik.yml:ro"
       - "./acme.json:/acme.json"
     labels:
       - "traefik.enable=true"
-      - "traefik.port=80"
       - "traefik.docker.network=proxy"
-      - "traefik.http.routers.traefik.service=traefik"
-      - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.dashboard.rule=Host(`traefik.safaripro.net`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls=true"
+      - "traefik.http.routers.dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dashboard.loadbalancer.server.port=8080"
       
 volumes:
   db_data:
