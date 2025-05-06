@@ -1,5 +1,5 @@
-from fastapi import FastAPI
 import os
+from fastapi import FastAPI
 
 app = FastAPI(
     title="CI/CD Configuration API",
