@@ -87,6 +87,12 @@ jobs:
                   python -m pip install --upgrade pip
                   pip install "pytest>=7.0.0" "pytest-cov==4.1.0" "pytest-asyncio==0.21.1"
                   if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            - name: Verify test files exist
+              run: |
+                  if [ ! -d "tests" ] || [ -z "$(ls tests/test_*.py 2>/dev/null)" ]; then
+                      echo "No test files found in the repository."
+                      exit 1
+                  fi
             - name: "Run tests with pytest"
               run: |
                   pytest --cov=. --cov-report=xml --cov-fail-under=80
