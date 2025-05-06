@@ -1,3 +1,4 @@
+"""Main application module for CI/CD configuration API."""
 from fastapi import FastAPI
 import os
 
@@ -18,7 +19,7 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for monitoring"""
+    """Health check endpoint for monitoring."""
     return {"status": "healthy"}
 
 if __name__ == "__main__":
