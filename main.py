@@ -23,10 +23,12 @@ async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
+
 @app.get("/index")
 async def index():
     """Index endpoint for the application"""
     return {"message": "Welcome to the CI/CD Configuration API"}
+
 
 if __name__ == "__main__":
     import uvicorn
