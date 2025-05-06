@@ -1,11 +1,12 @@
-from fastapi import FastAPI
 import os
+from fastapi import FastAPI
 
 app = FastAPI(
     title="CI/CD Configuration API",
     description="API for CI/CD configuration service",
-    version="0.1.0"
+    version="0.1.0",
 )
+
 
 @app.get("/")
 async def root():
@@ -13,19 +14,26 @@ async def root():
         "message": "Hello World",
         "status": "Running",
         "environment": os.getenv("ENVIRONMENT", "development"),
-        "port": os.getenv("PORT", "8000")
+        "port": os.getenv("PORT", "8000"),
     }
+
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring"""
     return {"status": "healthy"}
 
+
+@app.get("/index")
+async def index():
+    """Index endpoint for the application"""
+    return {"message": "Welcome to the CI/CD Configuration API"}
+
+
 if __name__ == "__main__":
     import uvicorn
-    
+
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
     reload_enabled = os.getenv("ENVIRONMENT", "development").lower() == "development"
-    
     uvicorn.run(app, host=host, port=port, reload=reload_enabled)
