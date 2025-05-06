@@ -154,6 +154,5 @@ jobs:
                   # Run smoke tests against running container
                   echo "✅ Container health check passed"
                   docker stop test-container
-    
-    
-    
+
+
