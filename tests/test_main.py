@@ -3,6 +3,7 @@ Tests for the FastAPI application main module.
 
 This module contains tests for the endpoints defined in main.py.
 """
+
 import os
 from typing import Dict, Any
 
@@ -16,7 +17,7 @@ from main import app
 def client() -> TestClient:
     """
     Create a test client for the FastAPI application.
-    
+
     Returns:
         TestClient: A TestClient instance for making requests to the app.
     """
@@ -26,7 +27,7 @@ def client() -> TestClient:
 def test_root_endpoint(client: TestClient) -> None:
     """
     Test the root endpoint of the application.
-    
+
     Args:
         client: TestClient fixture to make requests.
     """
@@ -42,7 +43,7 @@ def test_root_endpoint(client: TestClient) -> None:
 def test_health_endpoint(client: TestClient) -> None:
     """
     Test the health check endpoint.
-    
+
     Args:
         client: TestClient fixture to make requests.
     """
@@ -58,11 +59,11 @@ def test_environment_variables() -> None:
     Test that environment variables are properly handled.
     """
     from main import app
-    
+
     # Test default values
     assert app.title == "CI/CD Configuration API"
     assert app.version == "0.1.0"
-    
+
     # Test environment variable access
     env_var = os.environ.get("ENVIRONMENT", "development")
     assert isinstance(env_var, str)
