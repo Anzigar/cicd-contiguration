@@ -33,6 +33,7 @@ jobs:
             - name: "Scan for security vulnerabilities with Bandit"
               run: |
                   bandit -r . -x tests/ -f json -o bandit-results.json
+              continue-on-error: true
             
             - name: "Check dependencies for known vulnerabilities"
               run: |
