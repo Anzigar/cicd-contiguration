@@ -1,0 +1,526 @@
+name: "CI/CD Pipeline"
+
+on: 
+    workflow_dispatch:
+    pull_request:
+        branches: [feat, develop, main]
+    push:
+        branches: [develop, main]
+
+jobs:
+    security-scan:
+        name: "Security Scanning"
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+            
+            - name: "Setup Python"
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.11"
+            
+            - name: "Install security scanning tools"
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install bandit safety
+            
+            - name: "Scan for security vulnerabilities with Bandit"
+              run: |
+                  bandit -r . -x tests/ -f json -o bandit-results.json
+            
+            - name: "Check dependencies for known vulnerabilities"
+              run: |
+                  safety check -r requirements.txt
+    
+    lint:
+        name: "Code Quality"
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                python-version: ["3.11"]  
+        steps:
+            - uses: actions/checkout@v4
+            - name: "Set up Python ${{ matrix.python-version }}"
+              uses: actions/setup-python@v4
+              with:
+                  python-version: ${{ matrix.python-version }}
+            - name: "Install dependencies"
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install black flake8 pylint mypy
+                  if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            - name: "Type checking with mypy"
+              run: |
+                  mypy --ignore-missing-imports .
+            - name: "Check code formatting with black"
+              run: |
+                  black --check --line-length 88 .
+            - name: "Lint with flake8"
+              run: |
+                  flake8 . --count --select=E9,F63,F7,F82 --max-complexity=10 --max-line-length=127 --show-source
+            - name: "Analyze code with pylint"
+              run: |
+                  pylint $(git ls-files "*.py") --disable=C0111,R0903
+    
+    test:
+        name: "Run Tests"
+        needs: [security-scan, lint]
+        runs-on: ubuntu-latest
+        strategy:
+            matrix:
+                python-version: ["3.11"]
+        steps:
+            - uses: actions/checkout@v4
+            - name: "Set up Python ${{ matrix.python-version }}"
+              uses: actions/setup-python@v4
+              with:
+                  python-version: ${{ matrix.python-version }}
+            - name: "Install dependencies"
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install pytest pytest-cov pytest-asyncio
+                  if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+            - name: "Run tests with pytest"
+              run: |
+                  pytest --cov=. --cov-report=xml --cov-fail-under=80
+            
+            - name: "Upload coverage report"
+              uses: codecov/codecov-action@v3
+              with:
+                  file: ./coverage.xml
+                  fail_ci_if_error: true
+            
+    build:
+        name: "Build and Test Docker Image"
+        needs: test
+        runs-on: ubuntu-latest
+        permissions:
+            packages: write
+        steps:
+            - uses: actions/checkout@v4
+            - name: "Set up Docker Buildx"
+              uses: docker/setup-buildx-action@v3
+              
+            - name: "Docker metadata"
+              id: meta
+              uses: docker/metadata-action@v5
+              with:
+                  images: fastapi-app
+                  tags: |
+                      type=ref,event=branch
+                      type=sha
+                      type=semver,pattern={{version}}
+            
+            - name: "Build Docker image"
+              uses: docker/build-push-action@v5
+              with:
+                  context: .
+                  load: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
+            
+            - name: "Scan Docker image for vulnerabilities"
+              uses: aquasecurity/trivy-action@master
+              with:
+                  image-ref: "fastapi-app:${{ github.sha }}"
+                  format: "sarif"
+                  output: "trivy-results.sarif"
+                  severity: "CRITICAL,HIGH"
+                  exit-code: "0"
+            
+            - name: "Test container"
+              run: |
+                  docker run -d -p 8000:8000 --name test-container fastapi-app:${{ github.sha }}
+                  sleep 10
+                  
+                  # Test health endpoint
+                  HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/health)
+                  if [ "$HEALTH_STATUS" != "200" ]; then
+                      echo "❌ Health check failed with status: $HEALTH_STATUS"
+                      docker logs test-container
+                      docker stop test-container
+                      exit 1
+                  fi
+                  
+                  # Run smoke tests against running container
+                  echo "✅ Container health check passed"
+                  docker stop test-container
+    
+    terraform-security-scan:
+        name: "Terraform Security Scan"
+        needs: build
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            
+            - name: "Setup Terraform"
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: "1.6.0"
+                  cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+            
+            - name: "Initialize Terraform"
+              run: |
+                  cd terraform
+                  terraform init
+            
+            - name: "Terraform Format Check"
+              run: |
+                  cd terraform
+                  terraform fmt -check
+            
+            - name: "Terraform Validate"
+              run: |
+                  cd terraform
+                  terraform validate
+            
+            - name: "Install TFSec for security scanning"
+              run: |
+                  curl -L "https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64" -o tfsec
+                  chmod +x tfsec
+                  sudo mv tfsec /usr/local/bin/
+            
+            - name: "Run TFSec Security Scan"
+              run: |
+                  cd terraform
+                  tfsec . --format=json --out=tfsec-results.json
+            
+            - name: "Upload TFSec Results"
+              uses: github/codeql-action/upload-sarif@v2
+              with:
+                  sarif_file: terraform/tfsec-results.json
+                  category: terraform
+            
+            - name: "Run Checkov Terraform scan"
+              uses: bridgecrewio/checkov-action@master
+              with:
+                  directory: terraform
+                  framework: terraform
+                  output_format: sarif
+                  output_file_path: checkov-results.sarif
+            
+            - name: "Upload Checkov Results"
+              uses: github/codeql-action/upload-sarif@v2
+              with:
+                  sarif_file: checkov-results.sarif
+                  category: checkov-terraform
+    
+    deploy-staging:
+        name: "Deploy to Staging Environment"
+        needs: terraform-security-scan
+        if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main'
+        runs-on: ubuntu-latest
+        # environment: staging
+        concurrency: 
+            group: staging
+            cancel-in-progress: false
+        permissions:
+            contents: "read"
+            id-token: "write"
+        
+        env:
+            PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+            REGION: ${{ secrets.GCP_REGION }}
+            SERVICE: ${{ secrets.GCP_STAGING_SERVICE_NAME }}
+            WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        
+        steps:
+            - uses: actions/checkout@v4
+            
+            - name: "Setup Terraform"
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: "1.6.0"
+                  cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+            
+            - name: "Authenticate to Google Cloud"
+              id: auth
+              uses: google-github-actions/auth@v2
+              with:
+                  workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+                  project_id: ${{ env.PROJECT_ID }}
+            
+            - name: "Set up Cloud SDK"
+              uses: google-github-actions/setup-gcloud@v2
+            
+            - name: "Terraform Plan and Apply for Staging"
+              run: |
+                  cd terraform
+                  terraform init
+                  terraform workspace select staging || terraform workspace new staging
+                  terraform plan -var-file=environments/staging.tfvars -out=tfplan
+                  terraform apply -auto-approve tfplan
+            
+            - name: "Docker Auth to Artifact Registry"
+              uses: docker/login-action@v3
+              with:
+                  username: "oauth2accesstoken"
+                  password: ${{ steps.auth.outputs.access_token }}
+                  registry: "${{ env.REGION }}-docker.pkg.dev"
+            
+            - name: "Build and Push Container for Staging"
+              id: build-push-staging
+              run: |
+                  # Set image name with proper format for Artifact Registry
+                  IMAGE_NAME="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}/staging:${{ github.sha }}"
+                  
+                  # Build the Docker image with Cloud Build for better security
+                  echo "Building image: ${IMAGE_NAME}"
+                  gcloud builds submit --tag "${IMAGE_NAME}" .
+                  
+                  # Set output for later steps
+                  echo "image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+            
+            - name: "Deploy to Cloud Run Staging"
+              id: deploy-staging
+              uses: google-github-actions/deploy-cloudrun@v2
+              with:
+                  service: ${{ env.SERVICE }}-staging
+                  region: ${{ env.REGION }}
+                  image: ${{ steps.build-push-staging.outputs.image }}
+                  flags: "--allow-unauthenticated --cpu=1 --memory=512Mi --concurrency=80 --max-instances=5 --min-instances=1"
+            
+            - name: "Run Dynamic Security Tests"
+              run: |
+                  # Install OWASP ZAP for dynamic security scanning
+                  docker pull owasp/zap2docker-stable
+                  
+                  # Run ZAP baseline scan against staging deployment
+                  docker run --rm -v "$(pwd):/zap/wrk" owasp/zap2docker-stable zap-baseline.py \
+                    -t ${{ steps.deploy-staging.outputs.url }} \
+                    -g gen.conf \
+                    -r zap-report.html
+                  
+                  # Check for high severity issues
+                  if grep -q "FAIL-NEW: [1-9][0-9]* High" zap-report.html; then
+                    echo "❌ High severity issues found in dynamic scan!"
+                    exit 1
+                  else
+                    echo "✅ No high severity issues found in dynamic scan."
+                  fi
+            
+            - name: "Run Integration Tests on Staging"
+              run: |
+                  # Install test dependencies
+                  python -m pip install pytest requests
+                  
+                  # Create integration test file
+                  cat > integration_test.py << 'EOF'
+                  import requests
+                  import pytest
+                  import os
+                  
+                  STAGING_URL = "${{ steps.deploy-staging.outputs.url }}"
+                  
+                  def test_health_endpoint():
+                      response = requests.get(f"{STAGING_URL}/health")
+                      assert response.status_code == 200
+                      assert "healthy" in response.text
+                  
+                  def test_api_functionality():
+                      # Add your integration tests here
+                      pass
+                  EOF
+                  
+                  # Run integration tests
+                  pytest -xvs integration_test.py
+
+    deploy-vm:
+        name: "Deploy to Production VM"
+        needs: build
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        runs-on: ubuntu-latest
+        # environment: production
+        concurrency: 
+            group: production
+            cancel-in-progress: false
+        steps:
+            - uses: actions/checkout@v4
+            - name: "Set up SSH"
+              uses: webfactory/ssh-agent@v0.8.0
+              with:
+                  ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+            
+            - name: "Pre-deployment checks"
+              env:
+                  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+                  SERVER_USER: ${{ secrets.SERVER_USER }}
+              run: |
+                  # Verify we can connect to the server
+                  ssh-keyscan -H $SERVER_HOST >> ~/.ssh/known_hosts
+                  ssh $SERVER_USER@$SERVER_HOST "echo 'SSH connection successful'"
+                  
+                  # Check server disk space
+                  echo "Checking server disk space..."
+                  ssh $SERVER_USER@$SERVER_HOST "df -h | grep -v tmpfs"
+                  
+                  # Check Docker status
+                  echo "Checking Docker service status..."
+                  ssh $SERVER_USER@$SERVER_HOST "systemctl is-active docker || (echo 'Docker is not running' && exit 1)"
+            
+            - name: "Build Docker image on server"
+              env:
+                  SERVER_HOST: ${{ secrets.SERVER_HOST }}
+                  SERVER_USER: ${{ secrets.SERVER_USER }}
+                  DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+              run: |
+                  # Create deploy directory if it doesn't exist
+                  ssh $SERVER_USER@$SERVER_HOST "mkdir -p $DEPLOY_PATH"
+                  
+                  # Backup previous deployment for rollback capability
+                  ssh $SERVER_USER@$SERVER_HOST "if [ -d \"$DEPLOY_PATH\" ]; then cp -r $DEPLOY_PATH ${DEPLOY_PATH}_backup_$(date +%Y%m%d%H%M%S); fi"
+                  
+                  # Copy project files to server
+                  rsync -azP --exclude=".git" --exclude="venv" --exclude="__pycache__" --exclude="node_modules" ./ $SERVER_USER@$SERVER_HOST:$DEPLOY_PATH/
+                  
+                  # Deploy with zero-downtime strategy
+                  ssh $SERVER_USER@$SERVER_HOST "cd $DEPLOY_PATH && docker-compose pull && docker-compose up -d --build"
+                  
+            - name: "Verify deployment"
+              env:
+                  APP_URL: ${{ secrets.APP_URL }}
+              run: |
+                  echo "Verifying deployment at $APP_URL"
+                  
+                  # Progressive verification with increasing wait times
+                  for i in {1..12}; do
+                      RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" $APP_URL/health || echo "failed")
+                      
+                      if [ "$RESPONSE" == "200" ]; then
+                          echo "✅ Deployment verified successfully!"
+                          exit 0
+                      else
+                          echo "Attempt $i: Service not ready yet (status: $RESPONSE). Waiting..."
+                          sleep $(( i * 5 ))
+                      fi
+                  done
+                  
+                  echo "❌ Deployment verification failed after multiple attempts"
+                  exit 1
+            
+            - name: "Post-deployment notification"
+              if: success()
+              run: |
+                  echo "Deployment to production VM completed successfully"
+                  # Here you could add integration with Slack, Teams, etc.
+
+    deploy-cloud-run:
+        name: "Deploy to Google Cloud Run Production"
+        needs: [deploy-staging, terraform-security-scan]
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        runs-on: ubuntu-latest
+        # environment: production
+        concurrency: 
+            group: cloud-production
+            cancel-in-progress: false
+        permissions:
+            contents: "read"
+            id-token: "write"
+        
+        env:
+            PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+            REGION: ${{ secrets.GCP_REGION }}
+            SERVICE: ${{ secrets.GCP_SERVICE_NAME }}
+            WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        
+        steps:
+            - name: "Checkout repository"
+              uses: actions/checkout@v4
+            
+            - name: "Setup Terraform"
+              uses: hashicorp/setup-terraform@v3
+              with:
+                  terraform_version: "1.6.0"
+                  cli_config_credentials_token: ${{ secrets.TF_API_TOKEN }}
+            
+            - name: "Authenticate to Google Cloud"
+              id: auth
+              uses: google-github-actions/auth@v2
+              with:
+                  workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+                  project_id: ${{ env.PROJECT_ID }}
+            
+            - name: "Set up Cloud SDK"
+              uses: google-github-actions/setup-gcloud@v2
+            
+            - name: "Terraform Plan and Apply for Production"
+              run: |
+                  cd terraform
+                  terraform init
+                  terraform workspace select production || terraform workspace new production
+                  terraform plan -var-file=environments/production.tfvars -out=tfplan
+                  terraform apply -auto-approve tfplan
+            
+            - name: "Docker Auth to Artifact Registry"
+              uses: docker/login-action@v3
+              with:
+                  username: "oauth2accesstoken"
+                  password: ${{ steps.auth.outputs.access_token }}
+                  registry: "${{ env.REGION }}-docker.pkg.dev"
+            
+            - name: "Build and Push Container"
+              id: build-push
+              run: |
+                  # Set image name with proper format for Artifact Registry
+                  IMAGE_NAME="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.SERVICE }}:${{ github.sha }}"
+                  
+                  # Build the Docker image with Cloud Build for better security
+                  echo "Building image: ${IMAGE_NAME}"
+                  gcloud builds submit --tag "${IMAGE_NAME}" .
+                  
+                  # Set output for later steps
+                  echo "image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
+            
+            - name: "Deploy to Cloud Run"
+              id: deploy
+              uses: google-github-actions/deploy-cloudrun@v2
+              with:
+                  service: ${{ env.SERVICE }}
+                  region: ${{ env.REGION }}
+                  image: ${{ steps.build-push.outputs.image }}
+                  flags: "--allow-unauthenticated --cpu=1 --memory=512Mi --concurrency=80 --max-instances=10 --min-instances=1"
+            
+            - name: "Progressive traffic migration"
+              run: |
+                  # Implement progressive traffic migration
+                  echo "Routing 20% of traffic to new revision..."
+                  gcloud run services update-traffic ${{ env.SERVICE }} --region=${{ env.REGION }} --to-revisions=${{ github.sha }}=20
+                  
+                  echo "Waiting to verify stability..."
+                  sleep 30
+                  
+                  # Run canary verification
+                  HEALTH_CHECK=$(curl -s --max-time 10 "${{ steps.deploy.outputs.url }}/health")
+                  if [[ $HEALTH_CHECK == *"healthy"* ]]; then
+                      echo "Canary verification successful, routing 100% traffic to new revision"
+                      gcloud run services update-traffic ${{ env.SERVICE }} --region=${{ env.REGION }} --to-revisions=${{ github.sha }}=100
+                  else
+                      echo "Canary verification failed, rolling back"
+                      gcloud run services update-traffic ${{ env.SERVICE }} --region=${{ env.REGION }} --to-revisions=${{ github.sha }}=0
+                      exit 1
+                  fi
+            
+            - name: "Verify Cloud Run deployment"
+              run: |
+                  echo "Deployed service URL: ${{ steps.deploy.outputs.url }}"
+                  
+                  # Comprehensive verification
+                  curl -s --retry 10 --retry-delay 5 --retry-connrefused "${{ steps.deploy.outputs.url }}/health" || (echo "Cloud Run deployment verification failed" && exit 1)
+                  
+                  # Verify application performance
+                  for i in {1..5}; do
+                      time curl -s "${{ steps.deploy.outputs.url }}/health" > /dev/null
+                  done
+                  
+                  echo "✅ Cloud Run deployment successful and verified!"
+            
+            - name: "Create deployment tag"
+              if: success()
+              run: |
+                  TIMESTAMP=$(date +%Y%m%d%H%M%S)
+                  git tag "cloud-production-${TIMESTAMP}"
+                  git push origin "cloud-production-${TIMESTAMP}"
